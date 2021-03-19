@@ -3,117 +3,140 @@ package libs
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"time"
+
+	"github.com/google/uuid"
 )
 
-type Eventlog struct {
-	RequestMethod string `json:"request_method"`
-	// UserAgent     string
-	// Referrer      string
-	// Country       string
-	Place string `json:"place"`
-	// should be parsed to time.Time
-	Created    float32 `json:"created"`
-	Count      int32   `json:"count"`
-	Time       float32 `json:"time"`
-	TimeStayed float32 `json:"time_stayed"`
-	TotalTime  float32 `json:"total_time"`
-	// uuid
-	Tracker string `json:"tracker_id"`
-	User    int32  `json:"user_id"`
-
-	// do not use underscore
-	UURL           string  `json:"_user"`
-	UURLParams     string  `json:"_user_params"`
-	UURLFragment   string  `json:"_url_fragment"`
-	UURLParamsHash string  `json:"_url_params_hash"`
-	Ucategory      int32   `json:"_category_id"`
-	Upost          int32   `json:"_post_id"`
-	UmainCategory  int32   `json:"_main_category_id"`
-	UcategoryIds   []int32 `json:"_category_ids"`
-
-	Locale        int32             `json:"locale_id"`
-	URL           string            `json:"url"`
-	URLParams     map[string]string `json:"url_params"`
-	URLFragment   string            `json:"url_fragment"`
-	URLParamsHash string            `json:"url_params_hash"`
-	Categroy      int32             `json:"category_id"`
-	Post          int32             `json:"post_id"`
-	MainCategory  int32             `json:"main_category_id"`
-	CategoryIds   []int32           `json:"category_ids"`
-}
-
 type RequestBody struct {
-	// UserAgent string     `json:"user_agent"`
-	// Referrer  string     `json:"referrer"`
-	Logs []Eventlog `json:"logs"`
+	UserAgent string      `json:"user_agent"`
+	Referrer  string      `json:"referrer"`
+	Tracker   uuid.UUID   `json:"tracker"`
+	Logs      *[]Eventlog `json:"logs"`
 }
 
-func mapToJsonOrString(obj map[string]string) string {
-	bytes, err := json.Marshal(obj)
-	if err != nil || bytes == nil {
-		return ""
+type ParsedLogs struct {
+	Tracker   *Tracker
+	Eventlogs *[]Eventlog
+}
+
+func validate(eventlog *Eventlog) bool {
+	if eventlog.Created == 0 {
+		log.Println("created is 0")
+		return false
 	}
-	return string(bytes)
+	if eventlog.Time == 0 {
+		log.Println("time is 0")
+		return false
+	}
+	if eventlog.TotalTime == 0 {
+		log.Println("total time is 0")
+		return false
+	}
+	return true
 }
 
-func Parse(r *http.Request) (string, error) {
+func Parse(r *http.Request) (*ParsedLogs, error) {
 	decoder := json.NewDecoder(r.Body)
 	var b RequestBody
 	err := decoder.Decode(&b)
 	if err != nil {
-		return "", err
-	}
-	if len(b.Logs) == 0 {
-		return "", nil
+		return nil, err
 	}
 
-	userAgent := r.UserAgent()
+	if b.Logs == nil || len(*b.Logs) == 0 {
+		return nil, nil
+	}
+
+	userAgent := b.UserAgent
+	if userAgent == "" {
+		return nil, fmt.Errorf("user agent is empty\n")
+	}
 	if len(userAgent) > 255 {
 		userAgent = userAgent[:255]
 	}
-	referrer := r.Referer()
-	if len(referrer) > 255 {
-		referrer = referrer[:255]
-	}
-	// TODO
-	country := r.Header["HTTP_CLOUDFRONT_VIEWER_COUNTRY"]
-	// request user is authenticated
-	// tracker is valid? pid?
-	tracker_id := b.Logs[0].Tracker
-	log.Println(tracker_id)
 
-	formatted := make([]byte, 0, 100)
-	for _, log := range b.Logs {
-		created := time.Unix(int64(log.Created), 0)
-		urlParams := mapToJsonOrString(log.URLParams)
-		// TODO all
-		str := fmt.Sprintf("%s,%s,%s,%s,%s,%v\n", log.RequestMethod, referrer, created, country, urlParams, log.UcategoryIds)
-		formatted = append(formatted, str...)
+	var referrer *string
+	_referrer := b.Referrer
+	if _referrer != "" {
+		if len(_referrer) > 255 {
+			_referrer = _referrer[:255]
+		}
+		referrer = &_referrer
 	}
-	log.Println(string(formatted))
-	return string(formatted), nil
+
+	// TODO check
+	var country *string
+	_country := r.Header.Get("HTTP_CLOUDFRONT_VIEWER_COUNTRY")
+	if _country != "" {
+		country = &_country
+	}
+	// request user is authenticated
+	// user_id := 0
+
+	tracker_id := b.Tracker
+	if tracker_id == uuid.Nil {
+		// version 4
+		tracker_id, err = uuid.NewRandom()
+		if err != nil {
+			return nil, err
+		}
+	}
+	trackerTime := time.Now()
+
+	eventlogs := make([]Eventlog, 0, len(*b.Logs))
+	for _, eventlog := range *b.Logs {
+		if !validate(&eventlog) {
+			continue
+		}
+		eventlog.Tracker = tracker_id
+		eventlog.UserAgent = userAgent
+		eventlog.Referrer = referrer
+		eventlog.Country = country
+		eventlogs = append(eventlogs, eventlog)
+	}
+	if len(eventlogs) == 0 {
+		log.Println("No valid log")
+		return nil, nil
+	}
+
+	parsedLogs := ParsedLogs{Tracker: &Tracker{Uuid: tracker_id, Created: trackerTime}, Eventlogs: &eventlogs}
+	return &parsedLogs, nil
 }
 
-func EventlogHander(source chan string) func(http.ResponseWriter, *http.Request) {
+type ResponseBody struct {
+	Tracker uuid.UUID `json:"tracker"`
+}
+
+func EventlogHander(source chan *ParsedLogs) func(http.ResponseWriter, *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			log.Printf("Bad request method(%s)\n", r.Method)
-			io.WriteString(w, "ok!\n")
+			w.WriteHeader(404)
 			return
 		}
 
 		parsed, err := Parse(r)
 		if err != nil {
 			log.Println(err)
-			io.WriteString(w, "ok!\n")
+			w.WriteHeader(500)
 			return
 		}
+
+		if parsed == nil {
+			log.Println("invalid request")
+			w.WriteHeader(400)
+			return
+		}
+
+		response, err := json.Marshal(ResponseBody{Tracker: parsed.Tracker.Uuid})
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(201)
+		w.Write(response)
+
 		source <- parsed
 
-		io.WriteString(w, "ok!\n")
 	}
 }

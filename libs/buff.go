@@ -1,26 +1,21 @@
 package libs
 
 import (
-	"fmt"
 	"log"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"reflect"
 	"sync"
 	"time"
 )
 
 const (
-	Dirname  = "tmp"
-	Megabyte = 1 << 20
-	// MaxFileSize = Megabyte * 10
-	MaxFileSize      = 1024
+	// RESが30mbいかない程度の設定。
+	MaxArrayLength   = 1e3
 	MaxPassedMinutes = 30
-	Concurrency      = 5
+	// more than 2
+	Concurrency = 5
 )
 
-/* Check is a mutex is locked
+/* Check if a mutex is locked
 https://blog.trailofbits.com/2020/06/09/how-to-check-if-a-mutex-is-locked-in-go/
 */
 func MutexLocked(m *sync.Mutex) bool {
@@ -29,76 +24,52 @@ func MutexLocked(m *sync.Mutex) bool {
 	return state.Int()&mutexLocked == mutexLocked
 }
 
-func RunCopy(filePath string) error {
-	// time.Sleep(time.Second * 100)
-	commandArgs := []string{
-		"3",
+func includes(trackers []Tracker, tracker Tracker) bool {
+	for _, t := range trackers {
+		if t.Uuid == tracker.Uuid {
+			return true
+		}
 	}
-	out, err := exec.Command("sleep", commandArgs...).Output()
-	if err != nil {
-		return err
-	}
-	log.Printf("Output: %s", string(out))
-	return nil
+	return false
 }
 
-func CleanUpFile(filePath string) *os.File {
-	if err := os.Remove(filePath); err != nil {
-		log.Println(err)
-		return nil
-	}
-	// new file
-	file, err := os.Create(filePath)
-	if err != nil {
-		log.Println(err)
-		return nil
-	}
-	return file
-}
-
-func worker(source chan string, id int, mutex *sync.Mutex) {
+func worker(source chan *ParsedLogs, id int, mutex *sync.Mutex) {
 	startTime := time.Now()
-	filePath := filepath.Join(Dirname, fmt.Sprintf("buffer-%d.log", id))
-	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
-
-	if err != nil {
-		log.Println(err)
-		panic(err)
-	}
+	eventlogs := make([]Eventlog, 0, MaxArrayLength*1.5)
+	trackers := make([]Tracker, 0, MaxArrayLength*1.5)
 
 	for req := range source {
-		// write to file
-		_, err := file.WriteString(req + "\n")
-		if err != nil {
-			log.Println(err)
-			continue
+
+		eventlogs = append(eventlogs, *req.Eventlogs...)
+		if !includes(trackers, *req.Tracker) {
+			trackers = append(trackers, *req.Tracker)
 		}
-		// get file info for size comparing
-		fileInfo, err := file.Stat()
-		if err != nil {
-			log.Println(err)
-			continue
-		}
+
 		// passed time from start
 		passedTime := time.Now().Sub(startTime).Minutes()
 
-		if fileInfo.Size() > MaxFileSize || passedTime > MaxPassedMinutes {
+		if MutexLocked(mutex) {
+			continue
+		}
+		if len(eventlogs) > MaxArrayLength || passedTime > MaxPassedMinutes {
+			// 上のラインを計算している間にlockされることがある。
 			if MutexLocked(mutex) {
 				continue
 			}
 			mutex.Lock()
 
-			file.Close()
+			log.Println("buffer length", len(eventlogs), "passed time", passedTime)
 
-			log.Println("filePath", filePath, "filesize", fileInfo.Size()>>20, "Mb", "passed time", passedTime)
-			err := RunCopy(filePath)
-			if err == nil {
-				newFile := CleanUpFile(filePath)
-				if newFile != nil {
-					file = newFile
-				}
-			} else {
-				log.Printf("Copy command raised Error %v", err)
+			db := Connect()
+
+			// capacityは起動時に肥大することがあるのでリセットする。
+			BulkCreateTracker(db, &trackers)
+			trackers = make([]Tracker, 0, MaxArrayLength*1.5)
+			BulkCreateEventlog(db, &eventlogs)
+			eventlogs = make([]Eventlog, 0, MaxArrayLength*1.5)
+
+			if err := db.Close(); err != nil {
+				log.Println(err)
 			}
 
 			mutex.Unlock()
@@ -107,13 +78,8 @@ func worker(source chan string, id int, mutex *sync.Mutex) {
 	}
 }
 
-func BufferSetup() chan string {
-	// buffer dir
-	if _, err := os.Stat(Dirname); os.IsNotExist(err) {
-		log.Println("Create buffer directory")
-		os.Mkdir(Dirname, 0777)
-	}
-	source := make(chan string)
+func BufferSetup() chan *ParsedLogs {
+	source := make(chan *ParsedLogs)
 	mutex := sync.Mutex{}
 	// thread pool
 	for i := 0; i < Concurrency; i++ {

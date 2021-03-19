@@ -3,6 +3,8 @@ package libs
 import (
 	"fmt"
 	"io/ioutil"
+	"os"
+	"strconv"
 
 	"gopkg.in/yaml.v2"
 )
@@ -12,10 +14,34 @@ type Settings struct {
 	Endpoint string
 }
 
-func LoadSettings() Settings {
+type DBSettings struct {
+	Name     string `yaml:"DATABASE_NAME"`
+	User     string `yaml:"DATABASE_USER"`
+	Host     string `yaml:"DATABASE_HOST"`
+	Port     int    `yaml:"DATABASE_PORT"`
+	Password string `yaml:"DATABASE_PASSWORD"`
+}
+
+func LoadDBSettings(filepath string) {
+	var settings DBSettings
+	bytes, err := ioutil.ReadFile(filepath)
+	if err != nil {
+		panic(err)
+	}
+	yaml.Unmarshal(bytes, &settings)
+	port := strconv.Itoa(settings.Port)
+
+	os.Setenv("DB_NAME", settings.Name)
+	os.Setenv("DB_USER", settings.User)
+	os.Setenv("DB_HOST", settings.Host)
+	os.Setenv("DB_PORT", port)
+	os.Setenv("DB_PASSWORD", settings.Password)
+}
+
+func LoadSettings(filepath string) Settings {
 	var m map[string]interface{}
 
-	bytes, err := ioutil.ReadFile("settings.yaml")
+	bytes, err := ioutil.ReadFile(filepath)
 	if err != nil {
 		panic(err)
 	}
