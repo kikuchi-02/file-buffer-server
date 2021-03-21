@@ -12,8 +12,8 @@ import (
 
 func TestDb(t *testing.T) {
 	libs.LoadDBSettings("../user.yaml")
-	db := libs.Connect()
-	err := db.Ping()
+	db, err := libs.Connect()
+	err = db.Ping()
 	if err != nil {
 		t.Error(err)
 	}
@@ -41,7 +41,7 @@ func countRows(db *sql.DB, table string) (int, error) {
 }
 
 func TestBulkCreateTracker(t *testing.T) {
-	db := libs.Connect()
+	db, _ := libs.Connect()
 	defer db.Close()
 	before, err := countRows(db, "tracker")
 	if err != nil {
@@ -78,7 +78,7 @@ func createEventlog(tracker *libs.Tracker) libs.Eventlog {
 }
 
 func TestBulkCreateEventlog(t *testing.T) {
-	db := libs.Connect()
+	db, _ := libs.Connect()
 	defer db.Close()
 	before, err := countRows(db, "eventlog")
 	if err != nil {

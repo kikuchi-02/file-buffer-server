@@ -78,16 +78,15 @@ func worker(source chan *RequestBody, id int, mutex *sync.Mutex) {
 
 			log.Println("buffer length", len(eventlogs), "passed time", passedTime)
 
-			db := Connect()
-
-			err := BulkCreateTracker(db, &trackers)
+			db, err := Connect()
+			if err == nil {
+				err = BulkCreateTracker(db, &trackers)
+				if err == nil {
+					err = BulkCreateEventlog(db, &eventlogs)
+				}
+			}
 			if err != nil {
 				log.Println(err)
-			} else {
-				err = BulkCreateEventlog(db, &eventlogs)
-				if err != nil {
-					log.Panicln(err)
-				}
 			}
 
 			if passedTime > MaxPassedMinutes {
