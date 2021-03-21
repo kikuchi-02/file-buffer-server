@@ -9,14 +9,19 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/google/go-cmp/cmp"
 	"github.com/google/uuid"
 	"github.com/kikuchi-02/file-buffer-server/libs"
 )
 
 func assert(t *testing.T, expect interface{}, data interface{}) {
 	if expect != data {
-		t.Errorf("exptected: %v, but %v\n", expect, data)
+		t.Errorf("expected: %v, but %v\n", expect, data)
+	}
+}
+
+func assertNil(t *testing.T, data interface{}) {
+	if data == nil {
+		t.Errorf("expected to be nil, but %v\n", data)
 	}
 }
 
@@ -32,8 +37,9 @@ func assertSlice(t *testing.T, expect []int32, data []int32) {
 }
 
 func assertStruct(t *testing.T, expect interface{}, data interface{}) {
-	if !cmp.Equal(expect, data) {
-		t.Errorf("exptected: %v, but %v\n", expect, data)
+	// 他の方法でうまく行かなかった。
+	if fmt.Sprint(expect) != fmt.Sprint(data) {
+		t.Errorf("expected: %v, but %v\n", expect, data)
 	}
 }
 
@@ -76,27 +82,27 @@ func TestParse(t *testing.T) {
 	`, uuid)))
 
 	request := httptest.NewRequest(http.MethodPost, "http://localhost:8000/eventlog", body)
+	request.Header.Add("HTTP_CLOUDFRONT_VIEWER_COUNTRY", "test-country")
 	response, err := libs.Parse(request)
 	if err != nil {
 		t.Error(err)
 	}
-	if response.Eventlogs == nil {
-		t.Error("should not be nil")
+	if len(response.Logs) != 1 {
+		t.Errorf("expected %d, but %d", 1, len(response.Logs))
 	}
-	if len(*response.Eventlogs) != 1 {
-		t.Errorf("expected %d, but %d", 1, len(*response.Eventlogs))
+	log := (response.Logs)[0]
+	urlParams := map[string]string{
+		"page": "params",
 	}
-	log := (*response.Eventlogs)[0]
-	// urlParams := map[string]string{
-	// 	"page": "params",
-	// }
+
+	assert(t, "test-agent", response.UserAgent)
+	assert(t, "test-referrer", *response.Referrer)
+	assert(t, "test-country", *response.Country)
 
 	assert(t, "method", *log.RequestMethod)
-	assert(t, "test-agent", log.UserAgent)
-	assert(t, "test-referrer", *log.Referrer)
-	if log.Country != nil {
-		t.Errorf("expected to be nil, but %s", *log.Country)
-	}
+	assertNil(t, log.UserAgent)
+	assertNil(t, log.Referrer)
+	assertNil(t, log.Country)
 	assert(t, "place", *log.Place)
 	assert(t, float32(1615729350740), log.Created)
 	assert(t, 3, *log.Count)
@@ -106,8 +112,7 @@ func TestParse(t *testing.T) {
 
 	assert(t, "/url", *log.UURL)
 	assert(t, "fragment", *log.UURLFragment)
-	// TODO
-	// assertStruct(t, urlParams, log.UURLParams)
+	assertStruct(t, urlParams, log.UURLParams)
 	assert(t, "hash", *log.UURLParamsHash)
 	assert(t, 1, *log.Ucategory)
 	assert(t, 1, *log.Upost)
@@ -117,18 +122,17 @@ func TestParse(t *testing.T) {
 	assert(t, 1, *log.Locale)
 	assert(t, "/url", *log.URL)
 	assert(t, "fragment", *log.URLFragment)
-	// TODO
-	// assertStruct(t, urlParams, log.URLParams)
+	assertStruct(t, urlParams, log.URLParams)
 	assert(t, "hash", *log.URLParamsHash)
-	assert(t, 1, *log.Categroy)
+	assert(t, 1, *log.Category)
 	assert(t, 1, *log.Post)
 	assert(t, 1, *log.MainCategory)
 	assertSlice(t, []int32{1, 2}, *log.CategoryIds)
 
 }
 
-func parseResponse(r *httptest.ResponseRecorder) (*libs.ResponseBody, error) {
-	var res libs.ResponseBody
+func parseResponse(r *httptest.ResponseRecorder) (*libs.RequestBody, error) {
+	var res libs.RequestBody
 	b, err := ioutil.ReadAll(r.Body)
 	if err != nil {
 		return nil, err
@@ -164,8 +168,8 @@ func TestEventlogHandler(t *testing.T) {
 	request = httptest.NewRequest(http.MethodPost, "http://localhost:8000/eventlog", body)
 	response = httptest.NewRecorder()
 	libs.EventlogHander(source)(response, request)
-	if response.Code != 500 {
-		t.Errorf("expected 500, but %d\n", response.Code)
+	if response.Code != 400 {
+		t.Errorf("expected 400, but %d\n", response.Code)
 	}
 
 	// inadequate params
@@ -221,13 +225,13 @@ func TestEventlogHandler(t *testing.T) {
 	libs.EventlogHander(source)(response, request)
 
 	if response.Code != 201 {
-		t.Errorf("exptected 201, but %d", response.Code)
+		t.Errorf("expected 201, but %d", response.Code)
 	}
 	res, err := parseResponse(response)
 	if err != nil {
 		t.Error(err)
 	}
-	if res.Tracker == uuid.Nil {
+	if res.TrackerId == uuid.Nil {
 		t.Error("tracker id should not be nil")
 	}
 
@@ -273,13 +277,13 @@ func TestEventlogHandler(t *testing.T) {
 	libs.EventlogHander(source)(response, request)
 
 	if response.Code != 201 {
-		t.Errorf("exptected 201, but %d", response.Code)
+		t.Errorf("expected 201, but %d", response.Code)
 	}
 	res, err = parseResponse(response)
 	if err != nil {
 		t.Error(err)
 	}
-	if res.Tracker != tracker {
-		t.Error("tracker id should not be same")
+	if res.TrackerId != tracker {
+		t.Error("tracker id should be same")
 	}
 }

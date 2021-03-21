@@ -22,6 +22,13 @@ type DBSettings struct {
 	Password string `yaml:"DATABASE_PASSWORD"`
 }
 
+const (
+	MaxArrayLength   = 1e3 * 5
+	MaxPassedMinutes = 30
+	// more than 2
+	Concurrency = 5
+)
+
 func LoadDBSettings(filepath string) {
 	var settings DBSettings
 	bytes, err := ioutil.ReadFile(filepath)

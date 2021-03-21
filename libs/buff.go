@@ -7,14 +7,6 @@ import (
 	"time"
 )
 
-const (
-	// RESが30mbいかない程度の設定。
-	MaxArrayLength   = 1e3
-	MaxPassedMinutes = 30
-	// more than 2
-	Concurrency = 5
-)
-
 /* Check if a mutex is locked
 https://blog.trailofbits.com/2020/06/09/how-to-check-if-a-mutex-is-locked-in-go/
 */
@@ -33,16 +25,42 @@ func includes(trackers []Tracker, tracker Tracker) bool {
 	return false
 }
 
-func worker(source chan *ParsedLogs, id int, mutex *sync.Mutex) {
+func validate(eventlog *Eventlog) bool {
+	if eventlog.Created == 0 {
+		log.Println("created is 0")
+		return false
+	}
+	if eventlog.Time == 0 {
+		log.Println("time is 0")
+		return false
+	}
+	if eventlog.TotalTime == 0 {
+		log.Println("total time is 0")
+		return false
+	}
+	return true
+}
+
+func worker(source chan *RequestBody, id int, mutex *sync.Mutex) {
 	startTime := time.Now()
 	eventlogs := make([]Eventlog, 0, MaxArrayLength*1.5)
 	trackers := make([]Tracker, 0, MaxArrayLength*1.5)
 
 	for req := range source {
 
-		eventlogs = append(eventlogs, *req.Eventlogs...)
-		if !includes(trackers, *req.Tracker) {
-			trackers = append(trackers, *req.Tracker)
+		for _, log := range req.Logs {
+			if !validate(&log) {
+				continue
+			}
+			log.Tracker = req.TrackerId
+			log.UserAgent = req.UserAgent
+			log.Referrer = req.Referrer
+			log.Country = req.Country
+			eventlogs = append(eventlogs, log)
+		}
+		tracker := Tracker{req.TrackerId, req.TrackerCreated}
+		if !includes(trackers, tracker) {
+			trackers = append(trackers, tracker)
 		}
 
 		// passed time from start
@@ -62,11 +80,25 @@ func worker(source chan *ParsedLogs, id int, mutex *sync.Mutex) {
 
 			db := Connect()
 
-			// capacityは起動時に肥大することがあるのでリセットする。
-			BulkCreateTracker(db, &trackers)
-			trackers = make([]Tracker, 0, MaxArrayLength*1.5)
-			BulkCreateEventlog(db, &eventlogs)
-			eventlogs = make([]Eventlog, 0, MaxArrayLength*1.5)
+			err := BulkCreateTracker(db, &trackers)
+			if err != nil {
+				log.Println(err)
+			} else {
+				err = BulkCreateEventlog(db, &eventlogs)
+				if err != nil {
+					log.Panicln(err)
+				}
+			}
+
+			if passedTime > MaxPassedMinutes {
+				trackers = make([]Tracker, 0, MaxArrayLength*1.5)
+				eventlogs = make([]Eventlog, 0, MaxArrayLength*1.5)
+			} else {
+				// keep capacity
+				trackers = trackers[:0]
+				eventlogs = eventlogs[:0]
+
+			}
 
 			if err := db.Close(); err != nil {
 				log.Println(err)
@@ -78,8 +110,8 @@ func worker(source chan *ParsedLogs, id int, mutex *sync.Mutex) {
 	}
 }
 
-func BufferSetup() chan *ParsedLogs {
-	source := make(chan *ParsedLogs)
+func BufferSetup() chan *RequestBody {
+	source := make(chan *RequestBody)
 	mutex := sync.Mutex{}
 	// thread pool
 	for i := 0; i < Concurrency; i++ {

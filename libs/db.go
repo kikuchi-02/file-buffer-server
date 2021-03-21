@@ -52,7 +52,7 @@ type Eventlog struct {
 	URLParams     interface{} `json:"url_params"`
 	URLFragment   *string     `json:"url_fragment"`
 	URLParamsHash *string     `json:"url_params_hash"`
-	Categroy      *int        `json:"category"`
+	Category      *int        `json:"category"`
 	Post          *int        `json:"post"`
 	MainCategory  *int        `json:"main_category"`
 	CategoryIds   *[]int32    `json:"category_ids"`
@@ -70,31 +70,13 @@ func Connect() *sql.DB {
 	return db
 }
 
-func bulkCreate(db *sql.DB, runStmt func(txn *sql.Tx) *sql.Stmt) {
+func BulkCreateTracker(db *sql.DB, trackers *[]Tracker) error {
+
 	txn, err := db.Begin()
 	if err != nil {
-		log.Println(err)
-		return
+		return err
 	}
-
-	stmt := runStmt(txn)
-
-	err = stmt.Close()
-	if err != nil {
-		log.Println(err)
-		return
-	}
-	err = txn.Commit()
-	if err != nil {
-		log.Println(err)
-		return
-	}
-	log.Println("Successfully created")
-}
-
-func BulkCreateTracker(db *sql.DB, trackers *[]Tracker) {
-	bulkCreate(db, func(txn *sql.Tx) *sql.Stmt {
-		stmt, err := txn.Prepare(`
+	stmt, err := txn.Prepare(`
 		with T (uuid, created) as (values ($1, $2))
 		INSERT INTO okra_core_trackinguser( uuid, created )
 		SELECT uuid::uuid, created::timestamptz
@@ -105,20 +87,25 @@ func BulkCreateTracker(db *sql.DB, trackers *[]Tracker) {
 			WHERE T.uuid::uuid = okra_core_trackinguser.uuid
 		)
 		`)
-		if err != nil {
-			log.Println(err)
-			return stmt
-		}
-		for _, tracker := range *trackers {
-			_, err := stmt.Exec(tracker.Uuid, tracker.Created)
-			if err != nil {
-				log.Println(err)
-				return stmt
-			}
-		}
-		return stmt
 
-	})
+	if err != nil {
+		return err
+	}
+
+	defer stmt.Close()
+	for _, tracker := range *trackers {
+		_, err := stmt.Exec(tracker.Uuid, tracker.Created)
+		if err != nil {
+			return err
+		}
+	}
+	err = txn.Commit()
+	if err != nil {
+		return err
+	}
+
+	log.Printf("Successfully created trackers(%d)\n", len(*trackers))
+	return nil
 }
 
 func toJsonOrString(obj interface{}) *string {
@@ -134,50 +121,55 @@ func unixToTime(unixTime float32) time.Time {
 	return time.Unix(int64(unixTime), 0)
 }
 
-// 外部キー制約などに引っかかるとすべてrollbackされることに注意。
-func BulkCreateEventlog(db *sql.DB, eventlogs *[]Eventlog) {
-	bulkCreate(db, func(txn *sql.Tx) *sql.Stmt {
-		stmt, err := txn.Prepare(pq.CopyIn(
-			"okra_core_eventlog",
-			"request_method", "user_agent", "referrer",
-			"place", "created", "count",
-			"country", "time", "time_stayed",
-			"total_time", "_url", "_url_params",
-			"_url_fragment", "_url_params_hash", "_category_ids",
-			"url", "url_params", "url_fragment",
-			"url_params_hash", "category_ids", "_category_id",
-			"_main_category_id", "_post_id", "category_id",
-			"locale_id", "main_category_id", "post_id",
-			"tracker_id", "user_id",
-		))
-		if err != nil {
-			log.Println(err)
-			return stmt
-		}
-		for _, eventlog := range *eventlogs {
-			_, err = stmt.Exec(
-				eventlog.RequestMethod, eventlog.UserAgent, eventlog.Referrer,
-				eventlog.Place, unixToTime(eventlog.Created), eventlog.Count,
-				eventlog.Country, eventlog.Time, eventlog.TimeStayed,
-				eventlog.TotalTime, eventlog.UURL, toJsonOrString(eventlog.UURLParams),
-				eventlog.UURLFragment, eventlog.UURLParamsHash, pq.Array(eventlog.UcategoryIds),
-				eventlog.URL, toJsonOrString(eventlog.URLParams), eventlog.URLFragment,
-				eventlog.URLParamsHash, pq.Array(eventlog.CategoryIds), eventlog.Ucategory,
-				eventlog.UmainCategory, eventlog.Post, eventlog.Categroy,
-				eventlog.Locale, eventlog.MainCategory, eventlog.Post,
-				eventlog.Tracker, eventlog.User,
-			)
-			if err != nil {
-				log.Println(err)
-				return stmt
-			}
-		}
-		_, err = stmt.Exec()
-		if err != nil {
-			log.Println(err)
-			return stmt
-		}
-		return stmt
+func BulkCreateEventlog(db *sql.DB, eventlogs *[]Eventlog) error {
+	txn, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	stmt, err := txn.Prepare(pq.CopyIn(
+		"okra_core_eventlog",
+		"request_method", "user_agent", "referrer",
+		"place", "created", "count",
+		"country", "time", "time_stayed",
+		"total_time", "_url", "_url_params",
+		"_url_fragment", "_url_params_hash", "_category_ids",
+		"url", "url_params", "url_fragment",
+		"url_params_hash", "category_ids", "_category_id",
+		"_main_category_id", "_post_id", "category_id",
+		"locale_id", "main_category_id", "post_id",
+		"tracker_id", "user_id",
+	))
+	if err != nil {
+		return err
+	}
 
-	})
+	defer stmt.Close()
+	for _, eventlog := range *eventlogs {
+		_, err = stmt.Exec(
+			eventlog.RequestMethod, eventlog.UserAgent, eventlog.Referrer,
+			eventlog.Place, unixToTime(eventlog.Created), eventlog.Count,
+			eventlog.Country, eventlog.Time, eventlog.TimeStayed,
+			eventlog.TotalTime, eventlog.UURL, toJsonOrString(eventlog.UURLParams),
+			eventlog.UURLFragment, eventlog.UURLParamsHash, pq.Array(eventlog.UcategoryIds),
+			eventlog.URL, toJsonOrString(eventlog.URLParams), eventlog.URLFragment,
+			eventlog.URLParamsHash, pq.Array(eventlog.CategoryIds), eventlog.Ucategory,
+			eventlog.UmainCategory, eventlog.Post, eventlog.Category,
+			eventlog.Locale, eventlog.MainCategory, eventlog.Post,
+			eventlog.Tracker, eventlog.User,
+		)
+		if err != nil {
+			return err
+		}
+	}
+	_, err = stmt.Exec()
+	if err != nil {
+		return err
+	}
+	err = txn.Commit()
+	if err != nil {
+		return err
+	}
+
+	log.Printf("Successfully created eventlogs(%d)\n", len(*eventlogs))
+	return nil
 }
